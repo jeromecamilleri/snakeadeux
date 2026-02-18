@@ -1,0 +1,102 @@
+{
+  "coordinateSystem": "origin_top_left_x_right_y_down_shared_grid",
+  "grid": {
+    "width": 26,
+    "height": 26
+  },
+  "mode": "playing",
+  "stepMs": 105,
+  "winner": "",
+  "food": {
+    "x": 13,
+    "y": 13
+  },
+  "players": [
+    {
+      "id": "p1",
+      "name": "J1",
+      "control": "remote",
+      "alive": true,
+      "score": 0,
+      "best": 0,
+      "reason": "",
+      "direction": {
+        "x": 0,
+        "y": 1
+      },
+      "queuedDirection": {
+        "x": 0,
+        "y": 1
+      },
+      "snake": [
+        {
+          "x": 6,
+          "y": 14
+        },
+        {
+          "x": 6,
+          "y": 13
+        },
+        {
+          "x": 5,
+          "y": 13
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "name": "J2",
+      "control": "keyboard_local",
+      "alive": true,
+      "score": 0,
+      "best": 0,
+      "reason": "",
+      "direction": {
+        "x": 0,
+        "y": -1
+      },
+      "queuedDirection": {
+        "x": 0,
+        "y": -1
+      },
+      "snake": [
+        {
+          "x": 19,
+          "y": 12
+        },
+        {
+          "x": 19,
+          "y": 13
+        },
+        {
+          "x": 20,
+          "y": 13
+        }
+      ]
+    }
+  ],
+  "network": {
+    "role": "client",
+    "phase": "connected",
+    "hasInviteLink": false,
+    "hostReady": false,
+    "clientReady": false,
+    "stepMode": true,
+    "pendingSteps": 0,
+    "remoteInputCount": 0,
+    "lastError": ""
+  },
+  "views": {
+    "mode": "single",
+    "main": {
+      "x": 330,
+      "y": 156,
+      "size": 520
+    }
+  },
+  "visible": {
+    "overlay": false,
+    "splitScreen": false,
+    "sharedWorld": true
+  }
+}

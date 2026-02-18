@@ -1,0 +1,1 @@
+{"coordinateSystem":"origin_top_left_x_right_y_down_grid_20x20","mode":"playing","score":0,"best":0,"stepMs":110,"direction":{"x":0,"y":1},"queuedDirection":{"x":0,"y":1},"snake":[{"x":11,"y":16},{"x":11,"y":15},{"x":11,"y":14}],"food":{"x":4,"y":0},"visible":{"hud":true,"overlay":false}}

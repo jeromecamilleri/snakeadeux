@@ -1,0 +1,23 @@
+{
+  "generatedAt": "2026-02-18T14:22:23.010Z",
+  "actionFiles": [
+    "actions_eat.json",
+    "actions_gameover.json",
+    "actions_menu.json",
+    "actions_restart.json",
+    "actions_start_move.json"
+  ],
+  "overall": {
+    "totalBytes": 17922,
+    "coveredBytes": 17922,
+    "coveragePct": 100
+  },
+  "perScript": [
+    {
+      "url": "file:///home/camillej/testjeuxweb/index.html",
+      "totalBytes": 17922,
+      "coveredBytes": 17922,
+      "coveragePct": 100
+    }
+  ]
+}

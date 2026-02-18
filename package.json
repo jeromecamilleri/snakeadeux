@@ -1,0 +1,21 @@
+{
+  "name": "testjeuxweb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "coverage:game": "node scripts/web_game_coverage.mjs",
+    "dev:signal": "node scripts/dev_signal_server.mjs",
+    "dev:signal:ipv6": "HOST=:: PORT=4173 node scripts/dev_signal_server.mjs",
+    "dev:signal:http80": "HOST=:: PORT=80 node scripts/dev_signal_server.mjs",
+    "test:multiplayer": "node scripts/multiplayer_e2e.mjs --url http://127.0.0.1:4173",
+    "test:multiplayer:keyboard": "node scripts/multiplayer_keyboard_focus_e2e.mjs --url http://127.0.0.1:4173"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.58.2"
+  }
+}

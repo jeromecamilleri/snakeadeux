@@ -1,0 +1,1106 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Snake Duo Online</title>
+  <style>
+    :root { --bg-a: #f8f2de; --bg-b: #dbe9cf; --ink: #1c2a1f; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 14% 16%, var(--bg-a), var(--bg-b));
+      font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+      color: var(--ink);
+    }
+    canvas {
+      width: min(97vw, 1180px);
+      height: min(92vh, 700px);
+      border: 4px solid #1f2a1f;
+      border-radius: 14px;
+      background: #eef4e8;
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="1180" height="700"></canvas>
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const GRID = 26;
+      const STEP_MS = 105;
+      const FIRST_FOOD = { x: 13, y: 13 };
+      const forceTouch = new URLSearchParams(location.search).get("touch") === "1";
+
+      const state = {
+        mode: "menu",
+        elapsed: 0,
+        lastTs: 0,
+        food: { ...FIRST_FOOD },
+        winner: "",
+        players: [],
+        net: {
+          role: "none", // none | host | client
+          phase: "idle", // idle | waiting-answer | connecting | connected
+          pc: null,
+          dc: null,
+          remoteDir: { x: 0, y: 0 },
+          inviteLink: "",
+          lastError: "",
+          joinInFlight: false,
+          hostReady: false,
+          clientReady: false,
+          stepMode: false,
+          pendingSteps: 0,
+          gamepadIndex: -1,
+          rbPressed: false,
+          remoteInputCount: 0,
+        },
+        touch: {
+          enabled: forceTouch || ("ontouchstart" in window) || (navigator.maxTouchPoints || 0) > 0,
+          buttons: [],
+        },
+      };
+
+      function makePlayer(config) {
+        return {
+          id: config.id,
+          name: config.name,
+          control: config.control,
+          snake: config.snake.map((s) => ({ ...s })),
+          dir: { ...config.dir },
+          nextDir: { ...config.dir },
+          colors: config.colors,
+          alive: true,
+          score: 0,
+          best: 0,
+          reason: "",
+        };
+      }
+
+      function initPlayers() {
+        const isHost = state.net.role === "host";
+        const isClient = state.net.role === "client";
+        const remoteMode = isHost || isClient;
+        state.players = [
+          makePlayer({
+            id: "p1", name: "J1", control: isClient ? "remote" : "keyboard_local",
+            snake: [{ x: 6, y: 13 }, { x: 5, y: 13 }, { x: 4, y: 13 }],
+            dir: { x: 1, y: 0 },
+            colors: { head: "#165d2f", body: "#2f9e44" },
+          }),
+          makePlayer({
+            id: "p2", name: "J2", control: isHost ? "remote" : "keyboard_local",
+            snake: [{ x: 19, y: 13 }, { x: 20, y: 13 }, { x: 21, y: 13 }],
+            dir: remoteMode ? { x: -1, y: 0 } : { x: 0, y: 0 },
+            colors: { head: "#7b2cbf", body: "#9d4edd" },
+          }),
+        ];
+      }
+
+      initPlayers();
+
+      function layout() {
+        const remote = state.net.role === "host" || state.net.role === "client";
+        if (remote) {
+          const padding = 24, hudH = 132;
+          const board = Math.floor(Math.min(canvas.width - padding * 2, canvas.height - padding * 2 - hudH));
+          const x = Math.floor((canvas.width - board) / 2);
+          const y = padding + hudH;
+          return { mode: "single", padding, hudH, board, x, y, tile: board / GRID };
+        }
+        const padding = 24, gap = 32, hudH = 80;
+        const board = Math.floor(Math.min((canvas.width - padding * 2 - gap) / 2, canvas.height - padding * 2 - hudH));
+        return { mode: "split", padding, gap, hudH, board, leftX: padding, rightX: padding + board + gap, y: padding + hudH, tile: board / GRID };
+      }
+
+      function randomCell() {
+        return { x: Math.floor(Math.random() * GRID), y: Math.floor(Math.random() * GRID) };
+      }
+
+      function occupied(cell) {
+        return state.players.some((p) => p.snake.some((seg) => seg.x === cell.x && seg.y === cell.y));
+      }
+
+      function placeFood() {
+        let cell = randomCell();
+        let tries = 0;
+        while (occupied(cell) && tries < 500) { cell = randomCell(); tries += 1; }
+        state.food = cell;
+      }
+
+      function resetMatch() {
+        state.mode = "playing";
+        state.elapsed = 0;
+        state.winner = "";
+        initPlayers();
+        state.food = { ...FIRST_FOOD };
+        state.net.hostReady = false;
+        state.net.clientReady = false;
+        state.net.pendingSteps = 0;
+      }
+
+      function trySetDirection(player, x, y) {
+        if (!player.alive || state.mode !== "playing") return;
+        if (player.dir.x === -x && player.dir.y === -y) return;
+        player.nextDir = { x, y };
+      }
+
+      function getPlayerById(id) {
+        return state.players.find((p) => p.id === id) || null;
+      }
+
+      function cellEq(a, b) { return a.x === b.x && a.y === b.y; }
+      function inBounds(c) { return c.x >= 0 && c.y >= 0 && c.x < GRID && c.y < GRID; }
+
+      function bodySetForCollision(players, eatsMap) {
+        const set = new Set();
+        for (const p of players) {
+          if (!p.alive) continue;
+          const keepsTail = eatsMap.get(p.id) === true;
+          const limit = keepsTail ? p.snake.length : p.snake.length - 1;
+          for (let i = 0; i < limit; i++) set.add(p.snake[i].x + "," + p.snake[i].y);
+        }
+        return set;
+      }
+
+      function stepRound() {
+        const alive = state.players.filter((p) => p.alive);
+        if (alive.length === 0) return endRound();
+
+        const movingMap = new Map();
+        for (const p of alive) {
+          p.dir = { ...p.nextDir };
+          movingMap.set(p.id, !(p.dir.x === 0 && p.dir.y === 0));
+        }
+
+        const nextHeads = new Map();
+        const eatsMap = new Map();
+        for (const p of alive) {
+          if (!movingMap.get(p.id)) {
+            nextHeads.set(p.id, { ...p.snake[0] });
+            eatsMap.set(p.id, false);
+            continue;
+          }
+          const next = { x: p.snake[0].x + p.dir.x, y: p.snake[0].y + p.dir.y };
+          nextHeads.set(p.id, next);
+          eatsMap.set(p.id, cellEq(next, state.food));
+        }
+
+        const deaths = new Map();
+        for (const p of alive) {
+          if (!movingMap.get(p.id)) continue;
+          if (!inBounds(nextHeads.get(p.id))) deaths.set(p.id, "wall");
+        }
+
+        const occupiedCells = bodySetForCollision(alive, eatsMap);
+        for (const p of alive) {
+          if (!movingMap.get(p.id) || deaths.has(p.id)) continue;
+          const n = nextHeads.get(p.id);
+          if (occupiedCells.has(n.x + "," + n.y)) deaths.set(p.id, "body");
+        }
+
+        if (alive.length === 2) {
+          const [a, b] = alive;
+          const aNext = nextHeads.get(a.id), bNext = nextHeads.get(b.id);
+          const same = cellEq(aNext, bNext);
+          const swap = cellEq(aNext, b.snake[0]) && cellEq(bNext, a.snake[0]);
+          if (same || swap) { deaths.set(a.id, "head"); deaths.set(b.id, "head"); }
+        }
+
+        for (const p of alive) {
+          if (deaths.has(p.id)) {
+            p.alive = false;
+            p.reason = deaths.get(p.id);
+            p.best = Math.max(p.best, p.score);
+            continue;
+          }
+          if (!movingMap.get(p.id)) continue;
+          const next = nextHeads.get(p.id);
+          p.snake.unshift(next);
+          if (eatsMap.get(p.id)) {
+            p.score += 1;
+            p.best = Math.max(p.best, p.score);
+          } else {
+            p.snake.pop();
+          }
+        }
+
+        if ([...eatsMap.values()].some(Boolean)) placeFood();
+        if (state.players.some((p) => !p.alive)) endRound();
+      }
+
+      function endRound() {
+        const [p1, p2] = state.players;
+        if (p1.alive && !p2.alive) state.winner = "J1";
+        else if (p2.alive && !p1.alive) state.winner = "J2";
+        else if (p1.score > p2.score) state.winner = "J1";
+        else if (p2.score > p1.score) state.winner = "J2";
+        else state.winner = "egalite";
+        state.mode = "gameover";
+      }
+
+      function sendNet(msg) {
+        if (state.net.dc && state.net.dc.readyState === "open") state.net.dc.send(JSON.stringify(msg));
+      }
+
+      function setStepMode(nextValue) {
+        state.net.stepMode = Boolean(nextValue);
+        state.net.pendingSteps = 0;
+      }
+
+      function toggleStepMode() {
+        if (state.net.role === "client") return;
+        setStepMode(!state.net.stepMode);
+        if (state.net.role === "host") {
+          sendNet({ type: "debug_state", stepMode: state.net.stepMode });
+        }
+      }
+
+      function requestStep() {
+        if (state.mode !== "playing" || !state.net.stepMode) return;
+        if (state.net.role === "client") {
+          sendNet({ type: "step_request" });
+          return;
+        }
+        state.net.pendingSteps += 1;
+      }
+
+      function findGamepad() {
+        const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        if (!pads) return null;
+        if (state.net.gamepadIndex >= 0 && pads[state.net.gamepadIndex]) {
+          return pads[state.net.gamepadIndex];
+        }
+        for (const pad of pads) {
+          if (!pad) continue;
+          if (pad.mapping === "standard") {
+            state.net.gamepadIndex = pad.index;
+            return pad;
+          }
+        }
+        return null;
+      }
+
+      function pollGamepadStep() {
+        // Step mode is keyboard-only. Keep gamepad state reset.
+        state.net.rbPressed = false;
+      }
+
+      function syncReadyToPeer() {
+        if (state.net.phase !== "connected") return;
+        sendNet({
+          type: "ready_state",
+          hostReady: state.net.hostReady,
+          clientReady: state.net.clientReady,
+        });
+      }
+
+      function tryStartSyncedRound() {
+        if (state.net.role !== "host" || state.net.phase !== "connected") return;
+        if (!state.net.hostReady || !state.net.clientReady) return;
+        resetMatch();
+        sendNet({ type: "start" });
+        syncReadyToPeer();
+      }
+
+      function snapshot() {
+        return {
+          mode: state.mode,
+          winner: state.winner,
+          food: state.food,
+          players: state.players.map((p) => ({
+            id: p.id, alive: p.alive, score: p.score, best: p.best, reason: p.reason,
+            dir: p.dir, nextDir: p.nextDir, snake: p.snake,
+          })),
+        };
+      }
+
+      function applySnapshot(s) {
+        state.mode = s.mode;
+        state.winner = s.winner;
+        state.food = s.food;
+        for (let i = 0; i < state.players.length; i++) {
+          const src = s.players[i];
+          const dst = state.players[i];
+          dst.alive = src.alive;
+          dst.score = src.score;
+          dst.best = src.best;
+          dst.reason = src.reason;
+          dst.dir = src.dir;
+          dst.nextDir = src.nextDir;
+          dst.snake = src.snake;
+        }
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function signalBaseUrl() {
+        return `${location.origin}/signal/room`;
+      }
+
+      async function signalSet(roomId, kind, payload) {
+        const res = await fetch(`${signalBaseUrl()}/${encodeURIComponent(roomId)}/${kind}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ payload }),
+        });
+        if (!res.ok) throw new Error(`Signal POST ${kind} failed (${res.status})`);
+      }
+
+      async function signalGet(roomId, kind) {
+        const res = await fetch(`${signalBaseUrl()}/${encodeURIComponent(roomId)}/${kind}`);
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error(`Signal GET ${kind} failed (${res.status})`);
+        const data = await res.json();
+        return data.payload || null;
+      }
+
+      async function pollSignal(roomId, kind, timeoutMs) {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const payload = await signalGet(roomId, kind);
+          if (payload) return payload;
+          await sleep(250);
+        }
+        throw new Error(`Timeout signal ${kind}`);
+      }
+
+      async function createHostRoom(roomId) {
+        cleanupNet();
+        state.net.role = "host";
+        state.net.phase = "waiting-answer";
+        state.net.lastError = "";
+        initPlayers();
+
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+        state.net.pc = pc;
+        const dc = pc.createDataChannel("snake");
+        attachDataChannel(dc);
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitIceDone(pc);
+        await signalSet(roomId, "offer", pc.localDescription);
+
+        const answer = await pollSignal(roomId, "answer", 45000);
+        if (!answer || answer.type !== "answer") throw new Error("Answer invalide");
+        if (pc.signalingState !== "have-local-offer") {
+          throw new Error("Etat hote inattendu: " + pc.signalingState);
+        }
+        await pc.setRemoteDescription(answer);
+        state.net.phase = "connecting";
+      }
+
+      async function joinRoom(roomId) {
+        if (state.net.joinInFlight) return;
+        state.net.joinInFlight = true;
+        cleanupNet();
+        state.net.role = "client";
+        state.net.phase = "connecting";
+        state.net.lastError = "";
+        initPlayers();
+        try {
+          const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+          state.net.pc = pc;
+          pc.ondatachannel = (e) => attachDataChannel(e.channel);
+
+          const offer = await pollSignal(roomId, "offer", 45000);
+          if (!offer || offer.type !== "offer") throw new Error("Offer invalide");
+          await pc.setRemoteDescription(offer);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await waitIceDone(pc);
+          await signalSet(roomId, "answer", pc.localDescription);
+        } finally {
+          state.net.joinInFlight = false;
+        }
+      }
+
+      async function createHostOffer() {
+        cleanupNet();
+        state.net.role = "host";
+        state.net.phase = "waiting-answer";
+        initPlayers();
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+        state.net.pc = pc;
+        const dc = pc.createDataChannel("snake");
+        attachDataChannel(dc);
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await waitIceDone(pc);
+        const offerCode = btoa(JSON.stringify(pc.localDescription));
+        const link = location.origin + location.pathname + "#offer=" + encodeURIComponent(offerCode);
+        state.net.inviteLink = link;
+        prompt("Lien d'invitation a partager avec J2:", link);
+      }
+
+      async function joinFromOfferCode(offerCode) {
+        if (state.net.joinInFlight) return;
+        state.net.joinInFlight = true;
+        cleanupNet();
+        state.net.role = "client";
+        state.net.phase = "connecting";
+        initPlayers();
+        try {
+          const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+          state.net.pc = pc;
+          pc.ondatachannel = (e) => attachDataChannel(e.channel);
+
+          const offer = JSON.parse(atob(offerCode.trim()));
+          if (!offer || offer.type !== "offer") {
+            throw new Error("Code d'invitation invalide (offer attendu).");
+          }
+          if (pc.signalingState !== "stable") {
+            throw new Error("Etat WebRTC invalide avant join: " + pc.signalingState);
+          }
+          await pc.setRemoteDescription(offer);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await waitIceDone(pc);
+          const answerCode = btoa(JSON.stringify(pc.localDescription));
+          prompt("Code reponse a renvoyer a l'hote:", answerCode);
+        } finally {
+          state.net.joinInFlight = false;
+        }
+      }
+
+      async function hostApplyAnswer(answerCode) {
+        if (state.net.role !== "host") {
+          throw new Error("Seul l'hote peut appliquer un answer.");
+        }
+        if (!state.net.pc) {
+          throw new Error("Connexion hote introuvable.");
+        }
+        const pc = state.net.pc;
+        const answer = JSON.parse(atob(answerCode.trim()));
+        if (!answer || answer.type !== "answer") {
+          throw new Error("Code reponse invalide (answer attendu).");
+        }
+
+        // Avoid duplicate apply that causes: 'Cannot set remote answer in state stable'
+        if (pc.signalingState === "stable" && pc.remoteDescription && pc.remoteDescription.type === "answer") {
+          state.net.phase = "connected";
+          return;
+        }
+        if (pc.signalingState !== "have-local-offer") {
+          throw new Error("Etat WebRTC inattendu pour l'hote: " + pc.signalingState + " (attendu: have-local-offer)");
+        }
+
+        await pc.setRemoteDescription(answer);
+        state.net.phase = "connecting";
+      }
+
+      function attachDataChannel(dc) {
+        state.net.dc = dc;
+        dc.onopen = () => {
+          state.net.phase = "connected";
+          state.net.lastError = "";
+          state.net.hostReady = false;
+          state.net.clientReady = false;
+          if (state.net.role === "host") {
+            syncReadyToPeer();
+            sendNet({ type: "debug_state", stepMode: state.net.stepMode });
+          }
+        };
+        dc.onclose = () => {
+          state.net.phase = "idle";
+        };
+        dc.onmessage = (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "input" && state.net.role === "host") {
+            state.net.remoteDir = msg.dir;
+            state.net.remoteInputCount += 1;
+            // Apply immediately so the next step uses the latest remote direction.
+            if (state.mode === "playing") {
+              trySetDirection(state.players[1], msg.dir.x, msg.dir.y);
+            }
+          }
+          if (msg.type === "ready" && state.net.role === "host") {
+            state.net.clientReady = !!msg.value;
+            syncReadyToPeer();
+            tryStartSyncedRound();
+          }
+          if (msg.type === "step_request" && state.net.role === "host") {
+            if (state.net.stepMode && state.mode === "playing") state.net.pendingSteps += 1;
+          }
+          if (msg.type === "start" && state.net.role === "client") {
+            resetMatch();
+          }
+          if (msg.type === "debug_state" && state.net.role === "client") {
+            setStepMode(!!msg.stepMode);
+          }
+          if (msg.type === "ready_state" && state.net.role === "client") {
+            state.net.hostReady = !!msg.hostReady;
+            state.net.clientReady = !!msg.clientReady;
+          }
+          if (msg.type === "state" && state.net.role === "client") {
+            applySnapshot(msg.payload);
+          }
+        };
+      }
+
+      function waitIceDone(pc) {
+        return new Promise((resolve) => {
+          if (pc.iceGatheringState === "complete") return resolve();
+          const onChange = () => {
+            if (pc.iceGatheringState === "complete") {
+              pc.removeEventListener("icegatheringstatechange", onChange);
+              resolve();
+            }
+          };
+          pc.addEventListener("icegatheringstatechange", onChange);
+        });
+      }
+
+      function cleanupNet() {
+        if (state.net.dc) state.net.dc.close();
+        if (state.net.pc) state.net.pc.close();
+        state.net.pc = null;
+        state.net.dc = null;
+        state.net.role = "none";
+        state.net.phase = "idle";
+        state.net.remoteDir = { x: 0, y: 0 };
+        state.net.inviteLink = "";
+        state.net.hostReady = false;
+        state.net.clientReady = false;
+        state.net.pendingSteps = 0;
+        state.net.gamepadIndex = -1;
+        state.net.rbPressed = false;
+        state.net.remoteInputCount = 0;
+      }
+
+      function maybeAutoJoinFromHash() {
+        const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+        const offer = hash.get("offer");
+        if (offer && state.net.phase === "idle") {
+          joinFromOfferCode(offer).catch((err) => {
+            state.net.lastError = String(err.message || err);
+            cleanupNet();
+          });
+        }
+      }
+
+      function update(dtMs) {
+        pollGamepadStep();
+
+        if (state.net.role === "host" && state.mode === "playing") {
+          // In remote mode, host is always J1 (green) and client is always J2 (purple).
+          if (state.net.remoteInputCount > 0) {
+            trySetDirection(state.players[1], state.net.remoteDir.x, state.net.remoteDir.y);
+          }
+        }
+
+        if (state.net.role !== "client" && state.mode === "playing") {
+          if (state.net.stepMode) {
+            if (state.net.pendingSteps > 0) {
+              state.net.pendingSteps -= 1;
+              stepRound();
+            }
+          } else {
+            state.elapsed += dtMs;
+            while (state.elapsed >= STEP_MS) {
+              state.elapsed -= STEP_MS;
+              stepRound();
+              if (state.mode !== "playing") break;
+            }
+          }
+        }
+
+        if (state.net.role === "host" && state.net.phase === "connected") {
+          sendNet({ type: "state", payload: snapshot() });
+        }
+      }
+
+      function playerControlLabel(p) {
+        if (p.control === "remote") return "Distant";
+        return "Clavier";
+      }
+
+      function readyStatusText() {
+        if (state.net.role === "none") return "Mode local";
+        const h = state.net.hostReady ? "pret" : "attente";
+        const c = state.net.clientReady ? "pret" : "attente";
+        return `Ready hote=${h}, client=${c}, in=${state.net.remoteInputCount}`;
+      }
+
+      function readyStatusShort() {
+        if (state.net.role === "none") return "local";
+        const h = state.net.hostReady ? "H:ok" : "H:...";
+        const c = state.net.clientReady ? "C:ok" : "C:...";
+        return `${h} ${c}`;
+      }
+
+      function localPilotText() {
+        if (state.net.role === "host") return "Vous pilotez J1 (vert) avec 8/4/6/2";
+        if (state.net.role === "client") return "Vous pilotez J2 (violet)";
+        return "Local: J1 vert (8/4/6/2), J2 violet (IJKL)";
+      }
+
+      function isPlayerActiveForThisScreen(playerId) {
+        if (state.net.role === "host") return playerId === "p1";
+        if (state.net.role === "client") return playerId === "p2";
+        return true;
+      }
+
+      function speedStatusText() {
+        return state.net.stepMode ? "Mode pas a pas actif (Entree = +1 case)" : "Mode continu";
+      }
+
+      function readyControlLabel() {
+        return state.net.stepMode ? "R" : "Entree/Espace";
+      }
+
+      function touchButtonsLayout() {
+        if (state.mode === "menu") {
+          const w = 128;
+          const h = 48;
+          const gap = 12;
+          const total = w * 3 + gap * 2;
+          const x0 = Math.floor((canvas.width - total) / 2);
+          const y = canvas.height - h - 18;
+          const buttons = [
+            { id: "local", x: x0, y, w, h, label: "LOCAL", action: () => startLocalAction() },
+            { id: "host", x: x0 + w + gap, y, w, h, label: "HOST", action: () => startHostAction() },
+            { id: "join", x: x0 + (w + gap) * 2, y, w, h, label: "JOIN", action: () => joinAction() },
+          ];
+          if (state.net.role !== "none" && state.net.phase === "connected") {
+            const readyOn = state.net.role === "host" ? state.net.hostReady : state.net.clientReady;
+            buttons.push({
+              id: "menu-ready",
+              x: x0 + w + gap,
+              y: y - h - 10,
+              w,
+              h,
+              label: readyOn ? "PRET: OUI" : "PRET: NON",
+              action: () => tryStartFromInput(),
+            });
+          }
+          return buttons;
+        }
+        if (!state.touch.enabled) return [];
+        const size = 70;
+        const margin = 18;
+        const baseY = canvas.height - size - margin;
+        const dpadX = margin + size;
+
+        const buttons = [
+          { id: "up", x: dpadX, y: baseY - size - 8, w: size, h: size, label: "▲", action: () => handleDirInput(0, -1) },
+          { id: "left", x: dpadX - size - 8, y: baseY, w: size, h: size, label: "◀", action: () => handleDirInput(-1, 0) },
+          { id: "down", x: dpadX, y: baseY, w: size, h: size, label: "▼", action: () => handleDirInput(0, 1) },
+          { id: "right", x: dpadX + size + 8, y: baseY, w: size, h: size, label: "▶", action: () => handleDirInput(1, 0) },
+        ];
+
+        const actionW = 118;
+        const actionH = 54;
+        const rightX = canvas.width - actionW - margin;
+        const actionTop = canvas.height - actionH * 2 - margin - 12;
+        buttons.push({
+          id: "ready",
+          x: rightX,
+          y: actionTop,
+          w: actionW,
+          h: actionH,
+          label: state.net.stepMode ? "PRET (R)" : "PRET",
+          action: () => {
+            if (state.mode === "playing") return;
+            tryStartFromInput();
+          },
+        });
+        buttons.push({
+          id: "step",
+          x: rightX,
+          y: actionTop + actionH + 12,
+          w: actionW,
+          h: actionH,
+          label: "STEP",
+          action: () => requestStep(),
+        });
+        return buttons;
+      }
+
+      function drawTouchControls() {
+        state.touch.buttons = touchButtonsLayout();
+        if (state.touch.buttons.length === 0) return;
+        for (const b of state.touch.buttons) {
+          const isAction = b.id === "ready" || b.id === "step";
+          ctx.fillStyle = isAction ? "rgba(16, 24, 18, 0.72)" : "rgba(24, 36, 27, 0.62)";
+          ctx.strokeStyle = "rgba(244, 250, 242, 0.6)";
+          ctx.lineWidth = 2;
+          ctx.fillRect(b.x, b.y, b.w, b.h);
+          ctx.strokeRect(b.x, b.y, b.w, b.h);
+          ctx.fillStyle = "#f4fbf2";
+          ctx.font = isAction ? "bold 16px Trebuchet MS" : "bold 26px Trebuchet MS";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+        }
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+      }
+
+      function dispatchTouchControl(x, y) {
+        for (const b of state.touch.buttons) {
+          if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+            b.action();
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function drawWorld(viewX, viewY, size, tile) {
+        ctx.fillStyle = "#f5f9ef";
+        ctx.fillRect(viewX, viewY, size, size);
+        ctx.strokeStyle = "rgba(34, 52, 33, 0.09)";
+        for (let i = 0; i <= GRID; i++) {
+          const p = i * tile;
+          ctx.beginPath(); ctx.moveTo(viewX + p, viewY); ctx.lineTo(viewX + p, viewY + size); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(viewX, viewY + p); ctx.lineTo(viewX + size, viewY + p); ctx.stroke();
+        }
+
+        ctx.fillStyle = "#c1121f";
+        ctx.beginPath();
+        ctx.arc(viewX + state.food.x * tile + tile / 2, viewY + state.food.y * tile + tile / 2, tile * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+
+        for (const p of state.players) {
+          for (let i = p.snake.length - 1; i >= 0; i--) {
+            const s = p.snake[i];
+            ctx.fillStyle = i === 0 ? p.colors.head : p.colors.body;
+            ctx.fillRect(viewX + s.x * tile + 1, viewY + s.y * tile + 1, tile - 2, tile - 2);
+          }
+        }
+      }
+
+      function drawHUDForPlayer(p, x, y, width) {
+        const active = isPlayerActiveForThisScreen(p.id);
+        ctx.fillStyle = active ? "rgba(22, 26, 28, 0.78)" : "rgba(31, 42, 31, 0.12)";
+        ctx.fillRect(x, y, width, 68);
+        ctx.strokeStyle = active ? "rgba(255, 255, 255, 0.35)" : "rgba(31, 42, 31, 0.35)";
+        ctx.strokeRect(x, y, width, 68);
+        ctx.fillStyle = active ? "#f3f7f8" : "#132114";
+        ctx.font = "bold 25px Trebuchet MS";
+        ctx.fillStyle = p.colors.head;
+        ctx.fillRect(x + 12, y + 11, 14, 14);
+        ctx.fillStyle = active ? "#f3f7f8" : "#132114";
+        ctx.fillText(p.name, x + 34, y + 27);
+        ctx.font = "bold 20px Trebuchet MS";
+        ctx.fillText("Score: " + p.score, x + 12, y + 53);
+        ctx.font = "16px Trebuchet MS";
+        const tag = active ? "ici" : "obs";
+        ctx.fillText(playerControlLabel(p) + " | " + (p.alive ? "Actif" : "KO") + " | " + tag, x + 145, y + 53);
+      }
+
+      function drawOverlay() {
+        if (state.mode === "menu") {
+          ctx.fillStyle = "rgba(21, 31, 21, 0.82)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#fff8ea";
+          ctx.textAlign = "center";
+          ctx.font = "bold 60px Trebuchet MS";
+          ctx.fillText("SNAKE DUO ONLINE", canvas.width / 2, canvas.height / 2 - 130);
+          ctx.font = "20px Trebuchet MS";
+          const lines = [
+            "L: mode local 2 joueurs clavier (J1=8/4/6/2, J2=IJKL)",
+            "H: heberger une partie distante (room server en http)",
+            "J: rejoindre une room distante",
+            `${readyControlLabel()}: pret (distant) ou demarrer (local)`,
+            "T: activer/desactiver le mode pas a pas",
+            "En pas a pas: Entree = avance d'une case",
+          ];
+          lines.forEach((line, i) => ctx.fillText(line, canvas.width / 2, canvas.height / 2 - 58 + i * 30));
+          ctx.font = "20px Trebuchet MS";
+          const netText = `Reseau: role=${state.net.role}, phase=${state.net.phase}`;
+          ctx.fillText(netText, canvas.width / 2, canvas.height / 2 + 160);
+          ctx.fillText(readyStatusText(), canvas.width / 2, canvas.height / 2 + 186);
+          ctx.fillText(speedStatusText(), canvas.width / 2, canvas.height / 2 + 212);
+          if (state.net.lastError) ctx.fillText("Erreur: " + state.net.lastError, canvas.width / 2, canvas.height / 2 + 238);
+          ctx.textAlign = "left";
+        }
+
+        if (state.mode === "gameover") {
+          ctx.fillStyle = "rgba(52, 10, 26, 0.72)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#fff2e8";
+          ctx.textAlign = "center";
+          ctx.font = "bold 58px Trebuchet MS";
+          ctx.fillText("ROUND TERMINE", canvas.width / 2, canvas.height / 2 - 120);
+          ctx.font = "30px Trebuchet MS";
+          ctx.fillText(state.winner === "egalite" ? "Egalite" : ("Vainqueur: " + state.winner), canvas.width / 2, canvas.height / 2 - 70);
+          ctx.font = "24px Trebuchet MS";
+          ctx.fillText(`${readyControlLabel()}: pret pour le round suivant`, canvas.width / 2, canvas.height / 2 - 20);
+          ctx.textAlign = "left";
+        }
+      }
+
+      function render() {
+        const l = layout();
+        ctx.fillStyle = "#eaf2e0";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#132114";
+        ctx.textAlign = "center";
+        if (state.mode === "menu") {
+          ctx.font = "bold 21px Trebuchet MS";
+          ctx.fillText("Snake Duo - Grille partagee " + GRID + "x" + GRID + " | F: plein ecran", canvas.width / 2, 40);
+        } else {
+          ctx.font = "bold 22px Trebuchet MS";
+          ctx.fillText("Snake Duo - Grille partagee " + GRID + "x" + GRID, canvas.width / 2, 36);
+          ctx.font = "15px Trebuchet MS";
+          ctx.fillText(`Reseau ${state.net.role}/${state.net.phase} | F: plein ecran`, canvas.width / 2, 58);
+        }
+        ctx.textAlign = "left";
+
+        if (l.mode === "split") {
+          drawHUDForPlayer(state.players[0], l.leftX, l.padding + 2, l.board);
+          drawHUDForPlayer(state.players[1], l.rightX, l.padding + 2, l.board);
+          drawWorld(l.leftX, l.y, l.board, l.tile);
+          drawWorld(l.rightX, l.y, l.board, l.tile);
+          ctx.strokeStyle = "rgba(18, 28, 20, 0.45)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(l.leftX, l.y, l.board, l.board);
+          ctx.strokeRect(l.rightX, l.y, l.board, l.board);
+        } else {
+          drawHUDForPlayer(state.players[0], 48, l.padding + 40, 250);
+          drawHUDForPlayer(state.players[1], canvas.width - 298, l.padding + 40, 250);
+          ctx.textAlign = "center";
+          ctx.font = "15px Trebuchet MS";
+          ctx.fillText(`Etat: ${state.net.role}/${state.net.phase} | ${state.net.stepMode ? "pas-a-pas" : "continu"} | ${readyStatusShort()}`, canvas.width / 2, l.padding + 86);
+          ctx.fillText(localPilotText(), canvas.width / 2, l.padding + 106);
+          ctx.textAlign = "left";
+          drawWorld(l.x, l.y, l.board, l.tile);
+          ctx.strokeStyle = "rgba(18, 28, 20, 0.45)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(l.x, l.y, l.board, l.board);
+        }
+
+        drawTouchControls();
+        drawOverlay();
+      }
+
+      function tryStartFromInput() {
+        if (state.net.role === "host") {
+          if (state.net.phase === "connected") {
+            state.net.hostReady = !state.net.hostReady;
+            syncReadyToPeer();
+            tryStartSyncedRound();
+          }
+          return;
+        }
+        if (state.net.role === "client") {
+          if (state.net.phase === "connected") {
+            state.net.clientReady = !state.net.clientReady;
+            sendNet({ type: "ready", value: state.net.clientReady });
+          }
+          return;
+        }
+        resetMatch();
+      }
+
+      function startLocalAction() {
+        cleanupNet();
+        state.net.role = "none";
+        state.net.phase = "idle";
+        tryStartFromInput();
+      }
+
+      function startHostAction() {
+        if (location.protocol === "http:" || location.protocol === "https:") {
+          const room = prompt("Room ID hote (ex: room42):", "room42");
+          if (!room) return;
+          createHostRoom(room.trim()).catch((err) => { state.net.lastError = String(err.message || err); cleanupNet(); });
+        } else {
+          createHostOffer().catch((err) => { state.net.lastError = String(err.message || err); cleanupNet(); });
+        }
+      }
+
+      function joinAction() {
+        if (location.protocol === "http:" || location.protocol === "https:") {
+          const room = prompt("Room ID a rejoindre:", "room42");
+          if (!room) return;
+          joinRoom(room.trim()).catch((err) => { state.net.lastError = String(err.message || err); cleanupNet(); });
+        } else {
+          const pasted = prompt("Colle le code offer (ou la partie apres #offer=):", "");
+          if (!pasted) return;
+          const code = pasted.includes("#offer=") ? decodeURIComponent(pasted.split("#offer=")[1]) : pasted;
+          joinFromOfferCode(code).catch((err) => { state.net.lastError = String(err.message || err); cleanupNet(); });
+        }
+      }
+
+      function handleDirInput(x, y) {
+        if (state.net.role === "client") {
+          const p2 = getPlayerById("p2");
+          if (p2) trySetDirection(p2, x, y);
+          sendNet({ type: "input", dir: { x, y } });
+          return;
+        }
+        trySetDirection(state.players[0], x, y);
+      }
+
+      function keyHandler(e) {
+        const key = e.key.toLowerCase();
+        const code = e.code;
+        const blockedKeys = new Set([
+          "arrowup", "arrowdown", "arrowleft", "arrowright",
+          "i", "j", "k", "l",
+          "enter", " ", "r", "t",
+        ]);
+        const blockedCodes = new Set([
+          "Digit8", "Digit4", "Digit6", "Digit2",
+          "Numpad8", "Numpad4", "Numpad6", "Numpad2",
+          "NumpadEnter",
+        ]);
+        if (blockedKeys.has(key) || blockedCodes.has(code)) e.preventDefault();
+
+        if (key === "f") {
+          if (!document.fullscreenElement) canvas.requestFullscreen().catch(() => {});
+          else document.exitFullscreen().catch(() => {});
+          return;
+        }
+
+        if (state.mode === "menu") {
+          if (key === "l") {
+            startLocalAction();
+            return;
+          }
+          if (key === "h") {
+            startHostAction();
+            return;
+          }
+          if (key === "j") {
+            joinAction();
+            return;
+          }
+        }
+
+        if (key === "t") {
+          toggleStepMode();
+          return;
+        }
+
+        if (state.net.stepMode && (state.mode === "menu" || state.mode === "gameover")) {
+          if (key === "r") {
+            tryStartFromInput();
+            return;
+          }
+        }
+
+        if (!state.net.stepMode && (state.mode === "menu" || state.mode === "gameover") && (key === "enter" || key === " ")) {
+          tryStartFromInput();
+          return;
+        }
+
+        if (state.mode !== "playing") return;
+
+        if ((key === "enter" || key === " ") && state.net.stepMode) {
+          if (!e.repeat) requestStep();
+          return;
+        }
+
+        if (state.net.role === "client") {
+          if (key === "i") handleDirInput(0, -1);
+          if (key === "k") handleDirInput(0, 1);
+          if (key === "j") handleDirInput(-1, 0);
+          if (key === "l") handleDirInput(1, 0);
+        } else {
+          if (code === "Digit8" || code === "Numpad8") handleDirInput(0, -1);
+          if (code === "Digit2" || code === "Numpad2") handleDirInput(0, 1);
+          if (code === "Digit4" || code === "Numpad4") handleDirInput(-1, 0);
+          if (code === "Digit6" || code === "Numpad6") handleDirInput(1, 0);
+        }
+        if (state.net.role === "none") {
+          if (key === "i") trySetDirection(state.players[1], 0, -1);
+          if (key === "k") trySetDirection(state.players[1], 0, 1);
+          if (key === "j") trySetDirection(state.players[1], -1, 0);
+          if (key === "l") trySetDirection(state.players[1], 1, 0);
+        }
+      }
+
+      function loop(ts) {
+        if (!state.lastTs) state.lastTs = ts;
+        const dt = Math.min(34, ts - state.lastTs);
+        state.lastTs = ts;
+        update(dt);
+        render();
+        requestAnimationFrame(loop);
+      }
+
+      window.render_game_to_text = function renderGameToText() {
+        const l = layout();
+        return JSON.stringify({
+          coordinateSystem: "origin_top_left_x_right_y_down_shared_grid",
+          grid: { width: GRID, height: GRID },
+          mode: state.mode,
+          stepMs: STEP_MS,
+          winner: state.winner,
+          food: state.food,
+          players: state.players.map((p) => ({
+            id: p.id, name: p.name, control: p.control, alive: p.alive,
+            score: p.score, best: p.best, reason: p.reason,
+            direction: p.dir, queuedDirection: p.nextDir, snake: p.snake,
+          })),
+          network: {
+            role: state.net.role,
+            phase: state.net.phase,
+            hasInviteLink: Boolean(state.net.inviteLink),
+            hostReady: state.net.hostReady,
+            clientReady: state.net.clientReady,
+            stepMode: state.net.stepMode,
+            pendingSteps: state.net.pendingSteps,
+            remoteInputCount: state.net.remoteInputCount,
+            lastError: state.net.lastError
+          },
+          touch: {
+            enabled: state.touch.enabled,
+            buttons: state.touch.buttons.map((b) => ({ id: b.id, x: b.x, y: b.y, w: b.w, h: b.h })),
+          },
+          views: l.mode === "split"
+            ? { mode: "split", left: { x: l.leftX, y: l.y, size: l.board }, right: { x: l.rightX, y: l.y, size: l.board } }
+            : { mode: "single", main: { x: l.x, y: l.y, size: l.board } },
+          visible: { overlay: state.mode !== "playing", splitScreen: l.mode === "split", sharedWorld: true },
+        });
+      };
+
+      window.advanceTime = function advanceTime(ms) {
+        const step = 1000 / 60;
+        const n = Math.max(1, Math.round(ms / step));
+        for (let i = 0; i < n; i++) update(step);
+        render();
+      };
+
+      window.test_api = {
+        startHostRoom: async (roomId) => createHostRoom(roomId),
+        joinRoom: async (roomId) => joinRoom(roomId),
+        setReady: () => tryStartFromInput(),
+        toggleStepMode: () => toggleStepMode(),
+        step: () => requestStep(),
+        setDir: (x, y) => handleDirInput(x, y),
+        getState: () => JSON.parse(window.render_game_to_text()),
+      };
+
+      document.addEventListener("keydown", keyHandler);
+      canvas.addEventListener("pointerdown", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+        const y = ((e.clientY - rect.top) / rect.height) * canvas.height;
+        if (dispatchTouchControl(x, y)) {
+          e.preventDefault();
+        }
+      }, { passive: false });
+      maybeAutoJoinFromHash();
+      render();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
