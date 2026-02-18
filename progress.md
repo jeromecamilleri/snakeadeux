@@ -224,3 +224,70 @@ Original prompt: Fais-moi un jeu Snake en HTML5 canvas, sans framework, un seul 
 - Ajout d'un bouton menu `PRET: OUI/NON` quand la session distante est connectee (`role!=none && phase=connected`).
 - Ce bouton est cliquable sur mobile tactile et desktop (clic souris), et agit comme `Entree/Espace` (toggle ready host/client).
 - Validation menu de base: `output/web-game-menu/shot-0.png`.
+
+## Refactor lisibilite niveau 1 (demande utilisateur)
+- Decoupage complet de `index.html`:
+  - CSS extrait vers `styles.css`.
+  - JS extrait en modules ES dans `src/`:
+    - `src/constants.js`
+    - `src/state.js`
+    - `src/game.js`
+    - `src/network.js`
+    - `src/render.js`
+    - `src/input.js`
+    - `src/main.js` (bootstrap + hooks test)
+- `index.html` est maintenant minimal: canvas + import `styles.css` + `script type="module"`.
+- Fonctionnalites conservees: local/distant, mode pas-a-pas, boutons menu LOCAL/HOST/JOIN/PRET, touch controls, `render_game_to_text`, `advanceTime`, `test_api`.
+
+## Verification refactor
+- Verification syntaxe modules OK:
+  - `node --check src/main.js src/network.js src/render.js src/input.js src/game.js src/state.js`.
+- Limitation environnement sandbox de cette session:
+  - impossible d'executer Playwright/Chromium (`sandbox_host_linux.cc`),
+  - impossible d'ouvrir un serveur local (`listen EPERM` sur 127.0.0.1:4173).
+- Tests E2E non relances dans ce contexte; a relancer sur machine utilisateur avec:
+  - `npm run dev:signal`
+  - `npm run test:multiplayer:keyboard`
+
+## Refactor niveau 2 (decoupage propre)
+- Ajout `src/controls.js`:
+  - centralise les actions de controle/metier declenchees par UI/input (`toggleStepMode`, `requestStep`, `tryStartFromInput`, `startLocalAction`, `startHostAction`, `joinAction`, `handleDirInput`).
+  - export `createActions()` pour fournir un objet d'actions unique au reste de l'app.
+- Ajout `src/ui/menu.js`:
+  - centralise la logique UI de menu/HUD (`readyStatus*`, `localPilotText`, `readyControlLabel`, `menuOverlayLines`).
+  - centralise le layout des boutons tactiles/menu (`touchButtonsLayout`).
+- Ajout `src/debug.js`:
+  - centralise la generation de l'etat debug (`buildRenderGameToText`).
+  - centralise l'exposition des hooks globaux (`installDebugHooks` pour `render_game_to_text`, `advanceTime`, `test_api`).
+- `src/render.js` simplifie:
+  - consomme `src/ui/menu.js` pour tout le texte/etat menu.
+- `src/main.js` simplifie:
+  - bootstrap + boucle principale + liaison input/pointer + installation debug.
+
+## Verification niveau 2
+- Syntaxe modules validee: `node --check` OK sur `src/main.js`, `src/controls.js`, `src/debug.js`, `src/render.js`, `src/ui/menu.js`.
+- Dans ce sandbox, Playwright ne peut pas etre lance (`sandbox_host_linux.cc`), donc pas de rerun E2E ici.
+- Test utilisateur precedent confirme sur sa machine avant ce refactor: `npm run test:multiplayer:keyboard` -> OK.
+
+## Niveau 3 (rendu gameplay separe + tests unitaires)
+- Rendu separe en sous-modules:
+  - `src/render/gameplay.js`: rendu monde + HUD joueurs + vue split/single gameplay.
+  - `src/render/overlay.js`: overlays menu/gameover + controles tactiles + dispatch clic/touch.
+  - `src/render.js`: orchestration haut niveau (fond, header, gameplay, overlay).
+- Logique de controle pure extraite:
+  - nouveau `src/controls_logic.js` avec fonctions testables sans DOM:
+    - `canToggleStepMode`
+    - `canRequestStep`
+    - `computeStartIntent`
+    - `controlledPlayerIdForRole`
+  - `src/controls.js` consomme ces fonctions (comportement conserve).
+- Tests unitaires ajoutes:
+  - `tests/controls_logic.test.mjs` (Node test runner) couvrant les cas host/client/local.
+- Scripts npm:
+  - `test` pointe maintenant vers `test:unit`.
+  - `test:unit` execute `node --test tests/*.test.mjs`.
+
+## Verification niveau 3
+- `npm test` -> OK (tests unitaires passants).
+- `node --check` OK sur modules modifies.
+- `npm run test:multiplayer:keyboard` non executable dans ce sandbox (Chromium bloque), a rerun cote utilisateur.

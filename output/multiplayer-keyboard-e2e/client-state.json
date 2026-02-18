@@ -86,6 +86,10 @@
     "remoteInputCount": 0,
     "lastError": ""
   },
+  "touch": {
+    "enabled": false,
+    "buttons": []
+  },
   "views": {
     "mode": "single",
     "main": {

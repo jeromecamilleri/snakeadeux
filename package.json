@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:unit",
+    "test:unit": "node --test tests/*.test.mjs",
     "coverage:game": "node scripts/web_game_coverage.mjs",
     "dev:signal": "node scripts/dev_signal_server.mjs",
     "dev:signal:ipv6": "HOST=:: PORT=4173 node scripts/dev_signal_server.mjs",
