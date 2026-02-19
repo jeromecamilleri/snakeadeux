@@ -1,11 +1,11 @@
 import { canvas, state } from "../state.js";
 
 export function readyControlLabel() {
-  return state.net.stepMode ? "R" : "Entree/Espace";
+  return "Entree";
 }
 
 export function speedStatusText() {
-  return state.net.stepMode ? "Mode pas a pas actif (Entree = +1 case)" : "Mode continu";
+  return state.net.stepMode ? "Mode pas a pas actif (Espace = +1 case)" : "Mode continu";
 }
 
 export function readyStatusText() {
@@ -41,11 +41,11 @@ export function isPlayerActiveForThisScreen(playerId) {
 export function menuOverlayLines() {
   return [
     "L: mode local 2 joueurs clavier (J1=8/4/6/2, J2=IJKL)",
-    "H: heberger une partie distante (room server en http)",
-    "J: rejoindre une room distante",
+    "H: heberger une partie distante (room auto, unique)",
+    "J: rejoindre la partie distante en cours",
     `${readyControlLabel()}: pret (distant) ou demarrer (local)`,
     "T: activer/desactiver le mode pas a pas",
-    "En pas a pas: Entree = avance d'une case",
+    "En pas a pas: Espace = avance d'une case",
   ];
 }
 
@@ -100,7 +100,7 @@ export function touchButtonsLayout(actions) {
     y: actionTop,
     w: actionW,
     h: actionH,
-    label: state.net.stepMode ? "PRET (R)" : "PRET",
+    label: "PRET",
     action: () => {
       if (state.mode === "playing") return;
       actions.tryStartFromInput();

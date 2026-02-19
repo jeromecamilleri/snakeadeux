@@ -1,0 +1,3 @@
+ HOST=:: PORT=4173 npm run dev:signal
+Ouvrir port 4173 en entrée Box PARE-FEU IPV6 IPV6 reglage avancé (ajouter règle)
+ouvrir l'url http://[@IPV6]:4173/

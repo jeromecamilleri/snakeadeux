@@ -125,6 +125,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method === "POST") {
         const body = await parseBody(req);
         room[kind] = body.payload || null;
+        if (kind === "offer") {
+          room.answer = null;
+        }
         room.updatedAt = Date.now();
         logRequest(req, pathname, 200, `room=${roomId} kind=${kind} set`);
         return json(res, 200, { ok: true });

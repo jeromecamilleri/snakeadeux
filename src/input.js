@@ -7,7 +7,7 @@ export function createKeyHandler(actions) {
     const blockedKeys = new Set([
       "arrowup", "arrowdown", "arrowleft", "arrowright",
       "i", "j", "k", "l",
-      "enter", " ", "r", "t",
+      "enter", " ", "t",
     ]);
     const blockedCodes = new Set([
       "Digit8", "Digit4", "Digit6", "Digit2",
@@ -30,17 +30,13 @@ export function createKeyHandler(actions) {
 
     if (key === "t") return actions.toggleStepMode();
 
-    if (state.net.stepMode && (state.mode === "menu" || state.mode === "gameover")) {
-      if (key === "r") return actions.tryStartFromInput();
-    }
-
-    if (!state.net.stepMode && (state.mode === "menu" || state.mode === "gameover") && (key === "enter" || key === " ")) {
+    if ((state.mode === "menu" || state.mode === "gameover") && key === "enter") {
       return actions.tryStartFromInput();
     }
 
     if (state.mode !== "playing") return;
 
-    if ((key === "enter" || key === " ") && state.net.stepMode) {
+    if (key === " " && state.net.stepMode) {
       if (!e.repeat) actions.requestStep();
       return;
     }

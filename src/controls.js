@@ -17,6 +17,8 @@ import {
   controlledPlayerIdForRole,
 } from "./controls_logic.js";
 
+const REMOTE_SINGLE_ROOM_ID = "__snake_duo_single_room__";
+
 export function toggleStepMode() {
   if (!canToggleStepMode(state.net.role)) return;
   setStepMode(!state.net.stepMode);
@@ -69,9 +71,7 @@ export function startLocalAction() {
 
 export function startHostAction() {
   if (location.protocol === "http:" || location.protocol === "https:") {
-    const room = prompt("Room ID hote (ex: room42):", "room42");
-    if (!room) return;
-    createHostRoom(room.trim()).catch((err) => {
+    createHostRoom(REMOTE_SINGLE_ROOM_ID).catch((err) => {
       state.net.lastError = String(err.message || err);
       cleanupNet();
     });
@@ -86,9 +86,7 @@ export function startHostAction() {
 
 export function joinAction() {
   if (location.protocol === "http:" || location.protocol === "https:") {
-    const room = prompt("Room ID a rejoindre:", "room42");
-    if (!room) return;
-    joinRoom(room.trim()).catch((err) => {
+    joinRoom(REMOTE_SINGLE_ROOM_ID).catch((err) => {
       state.net.lastError = String(err.message || err);
       cleanupNet();
     });

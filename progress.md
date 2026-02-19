@@ -291,3 +291,20 @@ Original prompt: Fais-moi un jeu Snake en HTML5 canvas, sans framework, un seul 
 - `npm test` -> OK (tests unitaires passants).
 - `node --check` OK sur modules modifies.
 - `npm run test:multiplayer:keyboard` non executable dans ce sandbox (Chromium bloque), a rerun cote utilisateur.
+
+## Simplification mode distant (single room transparente)
+- Mode HTTP distant simplifie pour une seule partie a la fois:
+  - `H` heberge directement sur une room interne fixe (cachee, pas de prompt).
+  - `J` rejoint directement cette meme room interne (pas de prompt).
+- Plus de dependance a `room42`/saisie manuelle.
+- Serveur de signalisation:
+  - sur `POST offer`, purge automatique de `answer` precedent pour eviter de relancer `dev:signal` entre deux parties.
+- Texte menu mis a jour pour expliquer le mode room auto.
+- Validation: `npm test` OK.
+
+## UX touches pas-a-pas / pret (demande utilisateur)
+- `Entree` reserve au `pret/demarrer` en `menu`/`gameover`.
+- `Espace` reserve a l'avance pas-a-pas (`playing` + mode pas-a-pas).
+- Retrait de la logique `R` pour le pret.
+- Textes UI mis a jour (`readyControlLabel`, aide menu, statut vitesse, bouton tactile PRET).
+- Validation: `npm test` OK.
